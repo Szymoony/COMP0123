@@ -1,6 +1,10 @@
 # Hidden Bridge Detection in Complex Networks
 
-This repository contains tools for identifying and analyzing hidden bridge nodes in complex networks. Hidden bridges are nodes with low betweenness centrality that significantly impact connectivity between specific communities when removed.
+This repository contains the implementation and analysis code for the paper "Hidden Bridges: Identifying Critical Low-Centrality Nodes in Community-Specific Social Network Connectivity". It provides tools for detecting and analyzing nodes that, despite having low betweenness centrality, significantly impact connectivity between specific communities when removed.
+
+## Paper Abstract
+
+This study investigates the overlooked role of "hidden bridge" nodes in social networks - nodes with low betweenness centrality that significantly impact connectivity between specific communities. Using three complementary networks (Facebook social circles, synthetic Stochastic Block Model, and Russian Twitch social network), we demonstrate that traditional high-betweenness centrality metrics fail to identify crucial nodes maintaining local community connections. Our analysis identified 466 hidden bridges in the Facebook network, with 155 nodes having betweenness centrality below 0.05, including one critical node that disconnected a single community from 15 different community pairs.
 
 ## Features
 
@@ -34,24 +38,37 @@ cd COMP0123
 pip install -r requirements.txt
 ```
 
-## Usage
+## Reproducing Results
 
-The project consists of three main scripts:
+To reproduce the results from our paper:
 
-1. `network_analysis.py`: Basic network analysis and visualization
-```python
-python network_analysis.py --input path/to/network.txt
+1. Download the required datasets:
+   - Facebook social circles dataset: [SNAP](http://snap.stanford.edu/data/egonets-Facebook.html)
+   - Russian Twitch social network: [SNAP](https://snap.stanford.edu/data/twitch-social-networks.html)
+
+2. Run the analysis pipeline:
+
+```bash
+# 1. First analyze the network structure
+python network_analysis.py --input facebook_combined.txt --output results/facebook
+
+# 2. Detect hidden bridges
+python bridge_detection.py --input facebook_combined.txt --output results/facebook \
+    --betweenness-threshold 0.05 --impact-threshold 0.01
+
+# 3. Generate comparison SBM network
+python bridge_detection.py --input facebook_combined.txt --output results/sbm \
+    --generate-sbm --betweenness-threshold 0.05 --impact-threshold 0.01
+
+# 4. Analyze bridge characteristics
+python analyze_bridges.py --input results/facebook/hidden_bridges.csv --output results/facebook
 ```
 
-2. `analyze_bridges.py`: Analyze bridge node characteristics
-```python
-python analyze_bridges.py --input path/to/network.txt
-```
-
-3. `bridge_detection.py`: Detect and analyze hidden bridges
-```python
-python bridge_detection.py --input path/to/network.txt
-```
+Key parameters used in our analysis:
+- Betweenness threshold: 0.05
+- Impact threshold: 0.01 (1% increase in path length)
+- Community detection: Louvain algorithm
+- SBM parameters matched to maintain original network's degree distribution and community sizes
 
 ### Input Format
 

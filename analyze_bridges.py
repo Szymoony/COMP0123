@@ -1,3 +1,239 @@
+#!/usr/bin/env python3
+"""
+Bridge Analysis Module
+
+This module provides functionality for analyzing bridge nodes in networks,
+including their structural properties and impact on network connectivity.
+"""
+
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from pathlib import Path
+import logging
+from typing import Dict, List, Optional, Tuple
+import argparse
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class BridgeAnalyzer:
+    """Class for analyzing bridge nodes in networks."""
+    
+    def __init__(self, bridge_data: pd.DataFrame):
+        """
+        Initialize BridgeAnalyzer with bridge node data.
+        
+        Args:
+            bridge_data: DataFrame containing bridge node information
+        """
+        self.data = bridge_data
+        self._standardize_columns()
+        
+    @classmethod
+    def from_csv(cls, filepath: str) -> 'BridgeAnalyzer':
+        """
+        Create BridgeAnalyzer instance from a CSV file.
+        
+        Args:
+            filepath: Path to CSV file containing bridge data
+            
+        Returns:
+            BridgeAnalyzer instance
+        """
+        try:
+            df = pd.read_csv(filepath, sep=None, engine='python')
+            return cls(df)
+        except Exception as e:
+            logger.error(f"Error loading bridge data: {str(e)}")
+            raise
+            
+    def _standardize_columns(self):
+        """Standardize column names in the dataset."""
+        column_mapping = {
+            'Betweenness Centrality': 'BetweennessCentrality',
+            'Impact on Path Length': 'ImpactonPathLength',
+            'Community Pair': 'CommunityPair',
+            'Clustering Coefficient': 'ClusteringCoefficient'
+        }
+        self.data = self.data.rename(columns=column_mapping)
+        
+        # Convert numeric columns
+        numeric_columns = ['BetweennessCentrality', 'ImpactonPathLength', 
+                         'Degree', 'ClusteringCoefficient']
+        for col in numeric_columns:
+            self.data[col] = pd.to_numeric(self.data[col], errors='coerce')
+        
+        # Handle infinity values
+        self.data = self.data.replace('inf', np.inf)
+
+    def categorize_impact(self) -> pd.DataFrame:
+        """
+        Categorize nodes by their impact level and calculate statistics.
+        
+        Returns:
+            DataFrame containing impact statistics by category
+        """
+        # Create impact categories (excluding infinite values)
+        finite_df = self.data[self.data['ImpactonPathLength'] != np.inf].copy()
+        
+        conditions = [
+            (finite_df['ImpactonPathLength'] > 0.50),
+            (finite_df['ImpactonPathLength'] > 0.20) & (finite_df['ImpactonPathLength'] <= 0.50),
+            (finite_df['ImpactonPathLength'] > 0.05) & (finite_df['ImpactonPathLength'] <= 0.20),
+            (finite_df['ImpactonPathLength'] > 0.0001) & (finite_df['ImpactonPathLength'] <= 0.05)
+        ]
+        choices = ['Critical', 'High', 'Moderate', 'Low']
+        finite_df['ImpactCategory'] = np.select(conditions, choices, default='Other')
+        
+        return self._calculate_category_stats(finite_df)
+
+    def _calculate_category_stats(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate statistics for each impact category.
+        
+        Args:
+            df: DataFrame with categorized impacts
+            
+        Returns:
+            DataFrame containing statistics by category
+        """
+        stats = []
+        for category in ['Critical', 'High', 'Moderate', 'Low']:
+            cat_df = df[df['ImpactCategory'] == category]
+            if not cat_df.empty:
+                stats.append({
+                    'Impact Category': category,
+                    'Count': len(cat_df),
+                    'Median Betweenness': cat_df['BetweennessCentrality'].median(),
+                    'Median Degree': cat_df['Degree'].median(),
+                    'Median Clustering': cat_df['ClusteringCoefficient'].median()
+                })
+        
+        # Add infinite impact cases
+        inf_cases = self.data[self.data['ImpactonPathLength'] == np.inf]
+        if len(inf_cases) > 0:
+            stats.append({
+                'Impact Category': 'Infinite',
+                'Count': len(inf_cases),
+                'Median Betweenness': inf_cases['BetweennessCentrality'].median(),
+                'Median Degree': inf_cases['Degree'].median(),
+                'Median Clustering': inf_cases['ClusteringCoefficient'].median()
+            })
+        
+        return pd.DataFrame(stats)
+
+    def visualize_distributions(self, output_dir: Path):
+        """
+        Create visualizations of bridge node characteristics.
+        
+        Args:
+            output_dir: Directory to save visualizations
+        """
+        # Set up the figure
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # Betweenness centrality distribution
+        sns.histplot(data=self.data, x='BetweennessCentrality', 
+                    kde=True, ax=axes[0,0])
+        axes[0,0].set_title('Betweenness Centrality Distribution')
+        axes[0,0].set_xscale('log')
+        
+        # Impact distribution (excluding inf)
+        finite_impact = self.data[self.data['ImpactonPathLength'] != np.inf]
+        sns.histplot(data=finite_impact, x='ImpactonPathLength', 
+                    kde=True, ax=axes[0,1])
+        axes[0,1].set_title('Impact Distribution (Excluding Inf)')
+        
+        # Degree distribution
+        sns.histplot(data=self.data, x='Degree', kde=True, ax=axes[1,0])
+        axes[1,0].set_title('Degree Distribution')
+        axes[1,0].set_xscale('log')
+        
+        # Clustering coefficient distribution
+        sns.histplot(data=self.data, x='ClusteringCoefficient', 
+                    kde=True, ax=axes[1,1])
+        axes[1,1].set_title('Clustering Coefficient Distribution')
+        
+        plt.tight_layout()
+        plt.savefig(output_dir / 'bridge_distributions.png')
+        plt.close()
+
+    def generate_latex_tables(self) -> str:
+        """
+        Generate LaTeX tables for the analysis results.
+        
+        Returns:
+            String containing LaTeX table code
+        """
+        impact_stats = self.categorize_impact()
+        
+        latex_table = "\\begin{table}[htbp]\n"
+        latex_table += "    \\centering\n"
+        latex_table += "    \\caption{Impact Distribution of Hidden Bridge Nodes}\n"
+        latex_table += "    \\label{tab:impact-distribution}\n"
+        latex_table += "    \\begin{tabular}{@{}lrrrr@{}}\n"
+        latex_table += "    \\toprule\n"
+        latex_table += "    Impact Category & Count & Median Betweenness & "
+        latex_table += "Median Degree & Median Clustering \\\\\n"
+        latex_table += "    \\midrule\n"
+        
+        for _, row in impact_stats.iterrows():
+            latex_table += f"    {row['Impact Category']} & {row['Count']} & "
+            latex_table += f"{row['Median Betweenness']:.4f} & "
+            latex_table += f"{row['Median Degree']:.0f} & "
+            latex_table += f"{row['Median Clustering']:.4f} \\\\\n"
+        
+        latex_table += "    \\bottomrule\n"
+        latex_table += "    \\end{tabular}\n"
+        latex_table += "\\end{table}"
+        
+        return latex_table
+
+def main():
+    """Main function to run bridge analysis from command line."""
+    parser = argparse.ArgumentParser(description='Analyze bridge nodes')
+    parser.add_argument('input_file', type=str, 
+                       help='Path to CSV file containing bridge data')
+    parser.add_argument('--output', type=str, default='results',
+                       help='Output directory for results')
+    args = parser.parse_args()
+    
+    # Create output directory
+    output_dir = Path(args.output)
+    output_dir.mkdir(exist_ok=True)
+    
+    try:
+        # Initialize analyzer and run analysis
+        analyzer = BridgeAnalyzer.from_csv(args.input_file)
+        
+        # Generate impact statistics
+        impact_stats = analyzer.categorize_impact()
+        impact_stats.to_csv(output_dir / 'impact_statistics.csv', index=False)
+        logger.info("Generated impact statistics")
+        
+        # Create visualizations
+        analyzer.visualize_distributions(output_dir)
+        logger.info("Generated visualizations")
+        
+        # Generate LaTeX tables
+        latex_content = analyzer.generate_latex_tables()
+        with open(output_dir / 'tables.tex', 'w') as f:
+            f.write(latex_content)
+        logger.info("Generated LaTeX tables")
+        
+    except Exception as e:
+        logger.error(f"Analysis failed: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    main()
+    
 # import pandas as pd
 # import numpy as np
 
@@ -427,75 +663,75 @@
 # #             else:
 # #                 print(f"  {values:.4f}" if isinstance(values, float) else f"  {values}")
 
-import pandas as pd
-import numpy as np
+# import pandas as pd
+# import numpy as np
 
-def analyze_low_betweenness_nodes(filepath, network_name):
-    """Analyze nodes with betweenness centrality below 0.05"""
-    # Load data
-    df = pd.read_csv(filepath, sep=None, engine='python')
+# def analyze_low_betweenness_nodes(filepath, network_name):
+#     """Analyze nodes with betweenness centrality below 0.05"""
+#     # Load data
+#     df = pd.read_csv(filepath, sep=None, engine='python')
     
-    # Standardize column names
-    column_mapping = {
-        'Betweenness Centrality': 'BetweennessCentrality',
-        'Impact on Path Length': 'ImpactonPathLength',
-        'Community Pair': 'CommunityPair',
-        'Clustering Coefficient': 'ClusteringCoefficient'
-    }
-    df = df.rename(columns=column_mapping)
+#     # Standardize column names
+#     column_mapping = {
+#         'Betweenness Centrality': 'BetweennessCentrality',
+#         'Impact on Path Length': 'ImpactonPathLength',
+#         'Community Pair': 'CommunityPair',
+#         'Clustering Coefficient': 'ClusteringCoefficient'
+#     }
+#     df = df.rename(columns=column_mapping)
     
-    # Convert to numeric and handle infinities
-    df['BetweennessCentrality'] = pd.to_numeric(df['BetweennessCentrality'], errors='coerce')
-    df['ImpactonPathLength'] = pd.to_numeric(df['ImpactonPathLength'].replace('inf', np.inf), errors='coerce')
+#     # Convert to numeric and handle infinities
+#     df['BetweennessCentrality'] = pd.to_numeric(df['BetweennessCentrality'], errors='coerce')
+#     df['ImpactonPathLength'] = pd.to_numeric(df['ImpactonPathLength'].replace('inf', np.inf), errors='coerce')
     
-    # Identify low betweenness nodes
-    low_betweenness = df[df['BetweennessCentrality'] < 0.05]
+#     # Identify low betweenness nodes
+#     low_betweenness = df[df['BetweennessCentrality'] < 0.05]
     
-    # Calculate statistics
-    total_nodes = len(df)
-    low_betweenness_count = len(low_betweenness)
-    percentage = (low_betweenness_count / total_nodes) * 100
+#     # Calculate statistics
+#     total_nodes = len(df)
+#     low_betweenness_count = len(low_betweenness)
+#     percentage = (low_betweenness_count / total_nodes) * 100
     
-    # Calculate impact statistics for low betweenness nodes
-    infinite_impact = sum(low_betweenness['ImpactonPathLength'] == np.inf)
-    high_impact = sum((low_betweenness['ImpactonPathLength'] > 0.5) & 
-                     (low_betweenness['ImpactonPathLength'] != np.inf))
+#     # Calculate impact statistics for low betweenness nodes
+#     infinite_impact = sum(low_betweenness['ImpactonPathLength'] == np.inf)
+#     high_impact = sum((low_betweenness['ImpactonPathLength'] > 0.5) & 
+#                      (low_betweenness['ImpactonPathLength'] != np.inf))
     
-    print(f"\n{network_name} Network Analysis:")
-    print("-" * 50)
-    print(f"Total hidden bridge nodes: {total_nodes}")
-    print(f"Nodes with betweenness < 0.05: {low_betweenness_count} ({percentage:.1f}%)")
-    print(f"Among low betweenness nodes:")
-    print(f"- Causing infinite impact: {infinite_impact}")
-    print(f"- Causing high impact (>50%): {high_impact}")
+#     print(f"\n{network_name} Network Analysis:")
+#     print("-" * 50)
+#     print(f"Total hidden bridge nodes: {total_nodes}")
+#     print(f"Nodes with betweenness < 0.05: {low_betweenness_count} ({percentage:.1f}%)")
+#     print(f"Among low betweenness nodes:")
+#     print(f"- Causing infinite impact: {infinite_impact}")
+#     print(f"- Causing high impact (>50%): {high_impact}")
     
-    # Detailed statistics for low betweenness nodes
-    if len(low_betweenness) > 0:
-        print("\nLow betweenness nodes statistics:")
-        print(f"Median degree: {low_betweenness['Degree'].median():.1f}")
-        print(f"Median clustering coefficient: {low_betweenness['ClusteringCoefficient'].median():.4f}")
+#     # Detailed statistics for low betweenness nodes
+#     if len(low_betweenness) > 0:
+#         print("\nLow betweenness nodes statistics:")
+#         print(f"Median degree: {low_betweenness['Degree'].median():.1f}")
+#         print(f"Median clustering coefficient: {low_betweenness['ClusteringCoefficient'].median():.4f}")
         
-        # Impact distribution (excluding infinite)
-        finite_impact = low_betweenness[low_betweenness['ImpactonPathLength'] != np.inf]
-        if len(finite_impact) > 0:
-            print(f"Median impact (excluding infinite): {finite_impact['ImpactonPathLength'].median():.4f}")
+#         # Impact distribution (excluding infinite)
+#         finite_impact = low_betweenness[low_betweenness['ImpactonPathLength'] != np.inf]
+#         if len(finite_impact) > 0:
+#             print(f"Median impact (excluding infinite): {finite_impact['ImpactonPathLength'].median():.4f}")
     
-    return low_betweenness
+#     return low_betweenness
 
-def main():
-    networks = {
-        'Facebook': 'hidden_bridges_facebook.csv',
-        'SBM': 'hidden_bridges_facebook_random.csv',
-        'Twitch': 'hidden_bridges_twitch_ru_100.csv'
-    }
+# def main():
+#     networks = {
+#         'Facebook': 'hidden_bridges_facebook.csv',
+#         'SBM': 'hidden_bridges_facebook_random.csv',
+#         'Twitch': 'hidden_bridges_twitch_ru_100.csv'
+#     }
     
-    results = {}
-    for network_name, filepath in networks.items():
-        try:
-            results[network_name] = analyze_low_betweenness_nodes(filepath, network_name)
-        except Exception as e:
-            print(f"Error processing {network_name} network: {str(e)}")
-            continue
+#     results = {}
+#     for network_name, filepath in networks.items():
+#         try:
+#             results[network_name] = analyze_low_betweenness_nodes(filepath, network_name)
+#         except Exception as e:
+#             print(f"Error processing {network_name} network: {str(e)}")
+#             continue
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

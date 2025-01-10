@@ -1,234 +1,284 @@
+#!/usr/bin/env python3
+"""
+Network Analysis Module
+
+This module provides functionality for loading, analyzing, and visualizing complex networks.
+It includes basic network metrics calculation, community detection, and visualization tools.
+"""
+
 import networkx as nx
 import matplotlib.pyplot as plt
-import random
-import time
-from itertools import combinations
+import seaborn as sns
+import pandas as pd
+import argparse
+from pathlib import Path
+from typing import Optional, Tuple, List, Dict
+import logging
 
-# --- Loading the Dataset ---
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-def load_graph_data(filepath):
-    """Loads graph data from an edgelist file."""
-    try:
-        G = nx.read_edgelist(filepath, nodetype=int, data=False)
-        return G
-    except FileNotFoundError:
-        print(f"Error: File not found at {filepath}")
-        return None
-    except Exception as e:
-        print(f"An error occurred while loading the data: {e}")
-        return None
+class NetworkAnalyzer:
+    """Class for analyzing complex networks."""
+    
+    def __init__(self, graph: nx.Graph):
+        """
+        Initialize NetworkAnalyzer with a networkx graph.
+        
+        Args:
+            graph: NetworkX graph object to analyze
+        """
+        self.G = graph
+        self.communities = None
+        
+    @classmethod
+    def from_file(cls, filepath: str) -> 'NetworkAnalyzer':
+        """
+        Create NetworkAnalyzer instance from an edge list file.
+        
+        Args:
+            filepath: Path to edge list file
+            
+        Returns:
+            NetworkAnalyzer instance
+            
+        Raises:
+            FileNotFoundError: If input file doesn't exist
+            ValueError: If file format is invalid
+        """
+        try:
+            G = nx.read_edgelist(filepath, nodetype=int)
+            return cls(G)
+        except FileNotFoundError:
+            logger.error(f"File not found: {filepath}")
+            raise
+        except Exception as e:
+            logger.error(f"Error loading network: {str(e)}")
+            raise ValueError(f"Invalid file format: {str(e)}")
 
-# --- Basic Network Analysis ---
-
-def analyze_network(G):
-    """Analyzes basic properties of the network."""
-    print("Number of nodes:", G.number_of_nodes())
-    print("Number of edges:", G.number_of_edges())
-    print("Average degree:", sum(dict(G.degree()).values()) / G.number_of_nodes())
-    print("Density:", nx.density(G))
-    print("Is connected:", nx.is_connected(G))
-
-    if nx.is_connected(G):
-        print("Diameter:", nx.diameter(G))
-    else:
-        print("Diameter: Network is not connected, calculating diameter of the largest component")
-        largest_cc = max(nx.connected_components(G), key=len)
-        G_largest = G.subgraph(largest_cc)
-        print("Diameter of largest connected component:", nx.diameter(G_largest))
-
-    print("Average clustering coefficient:", nx.average_clustering(G))
-
-    # Degree Distribution
-    degrees = [G.degree(n) for n in G.nodes()]
-    plt.hist(degrees, bins=50)
-    plt.title("Degree Distribution")
-    plt.xlabel("Degree")
-    plt.ylabel("Frequency")
-    plt.show()
-
-# --- Community Detection (Louvain) ---
-
-def detect_communities(G):
-    """Detects communities using the Louvain algorithm."""
-    try:
-        communities = nx.community.louvain_communities(G)
-        return communities
-    except Exception as e:
-        print(f"An error occurred during community detection: {e}")
-        return None
-
-# --- Path Length Calculation ---
-
-def calculate_path_length_between_communities(G, communities, num_pairs=10, sample_size=20):
-    """Calculates average path length between random community pairs."""
-    community_pairs = []
-    if len(communities) >= 2:
-        for i in range(num_pairs):
-            pair = random.sample(range(len(communities)), 2)
-            community_pairs.append((pair[0], pair[1]))
-
-    path_lengths = []
-    for pair in community_pairs:
-        community1 = list(communities[pair[0]])
-        community2 = list(communities[pair[1]])
-
-        total_path_length = 0
-        num_paths = 0
-
-        # Sample from the original graph G
-        sample_community1 = random.sample(community1, min(sample_size, len(community1)))
-        sample_community2 = random.sample(community2, min(sample_size, len(community2)))
-
-        for u in sample_community1:
-            for v in sample_community2:
-                if u != v and nx.has_path(G, u, v):
-                    total_path_length += nx.shortest_path_length(G, u, v)
-                    num_paths += 1
-
-        if num_paths > 0:
-            avg_path_length = total_path_length / num_paths
-            path_lengths.append((pair, avg_path_length))
+    def basic_analysis(self) -> Dict:
+        """
+        Perform basic network analysis.
+        
+        Returns:
+            Dictionary containing basic network metrics
+        """
+        metrics = {
+            'nodes': self.G.number_of_nodes(),
+            'edges': self.G.number_of_edges(),
+            'density': nx.density(self.G),
+            'avg_clustering': nx.average_clustering(self.G),
+            'is_connected': nx.is_connected(self.G)
+        }
+        
+        if metrics['is_connected']:
+            metrics['diameter'] = nx.diameter(self.G)
+            metrics['avg_path_length'] = nx.average_shortest_path_length(self.G)
         else:
-            path_lengths.append((pair, float('inf')))
+            largest_cc = max(nx.connected_components(self.G), key=len)
+            G_largest = self.G.subgraph(largest_cc)
+            metrics['diameter_largest_cc'] = nx.diameter(G_largest)
+            metrics['avg_path_length_largest_cc'] = nx.average_shortest_path_length(G_largest)
+            
+        return metrics
 
-    return path_lengths
+    def analyze_degree_distribution(self) -> pd.DataFrame:
+        """
+        Analyze degree distribution of the network.
+        
+        Returns:
+            DataFrame containing degree distribution data
+        """
+        degrees = [self.G.degree(n) for n in self.G.nodes()]
+        return pd.DataFrame(degrees, columns=['Degree'])
 
-# --- Betweenness Centrality Calculation ---
+    def detect_communities(self) -> List[set]:
+        """
+        Detect communities using Louvain algorithm.
+        
+        Returns:
+            List of sets, where each set contains nodes in a community
+        """
+        try:
+            self.communities = list(nx.community.louvain_communities(self.G))
+            return self.communities
+        except Exception as e:
+            logger.error(f"Error in community detection: {str(e)}")
+            raise
 
-def calculate_betweenness_centrality(G):
-    """Calculates betweenness centrality for all nodes."""
-    betweenness = nx.betweenness_centrality(G)
-    return betweenness
+    def visualize_network(self, output_path: Optional[str] = None):
+        """
+        Visualize the network with community structure if available.
+        
+        Args:
+            output_path: Optional path to save the visualization
+        """
+        plt.figure(figsize=(12, 8))
+        pos = nx.spring_layout(self.G, k=1/np.sqrt(self.G.number_of_nodes()))
+        
+        if self.communities:
+            # Color nodes by community
+            colors = [f'C{i}' for i in range(len(self.communities))]
+            for idx, community in enumerate(self.communities):
+                nx.draw_networkx_nodes(self.G, pos, 
+                                     nodelist=list(community),
+                                     node_color=colors[idx],
+                                     node_size=100,
+                                     alpha=0.6)
+        else:
+            nx.draw_networkx_nodes(self.G, pos, 
+                                 node_color='lightblue',
+                                 node_size=100,
+                                 alpha=0.6)
+            
+        nx.draw_networkx_edges(self.G, pos, alpha=0.2)
+        
+        if output_path:
+            plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
 
-# --- Node Removal ---
+def analyze_high_betweenness_removal(self, percentage: float = 0.01) -> Dict:
+        """
+        Analyze the impact of removing top betweenness nodes and compare with random removal.
+        
+        Args:
+            percentage: Percentage of nodes to remove (default: 0.01 for 1%)
+            
+        Returns:
+            Dictionary containing comparison metrics
+        """
+        # Store original metrics
+        original_metrics = self.basic_analysis()
+        num_nodes_to_remove = int(len(self.G.nodes()) * percentage)
+        
+        # Calculate betweenness centrality
+        betweenness = nx.betweenness_centrality(self.G)
+        
+        # Remove top betweenness nodes
+        top_nodes = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:num_nodes_to_remove]
+        G_high_removed = self.G.copy()
+        G_high_removed.remove_nodes_from([node for node, _ in top_nodes])
+        
+        # Calculate metrics after high betweenness removal
+        high_removed_metrics = {
+            'avg_path_length': nx.average_shortest_path_length(G_high_removed) if nx.is_connected(G_high_removed) 
+                              else float('inf'),
+            'num_components': nx.number_connected_components(G_high_removed),
+            'largest_component_size': len(max(nx.connected_components(G_high_removed), key=len)),
+            'clustering_coefficient': nx.average_clustering(G_high_removed)
+        }
+        
+        # Random node removal for comparison
+        random_nodes = random.sample(list(self.G.nodes()), num_nodes_to_remove)
+        G_random_removed = self.G.copy()
+        G_random_removed.remove_nodes_from(random_nodes)
+        
+        # Calculate metrics after random removal
+        random_removed_metrics = {
+            'avg_path_length': nx.average_shortest_path_length(G_random_removed) if nx.is_connected(G_random_removed)
+                              else float('inf'),
+            'num_components': nx.number_connected_components(G_random_removed),
+            'largest_component_size': len(max(nx.connected_components(G_random_removed), key=len)),
+            'clustering_coefficient': nx.average_clustering(G_random_removed)
+        }
+        
+        # Calculate changes
+        results = {
+            'high_betweenness_removal': {
+                'path_length_change': ((high_removed_metrics['avg_path_length'] - original_metrics['avg_path_length']) 
+                                     / original_metrics['avg_path_length'] * 100),
+                'num_components': high_removed_metrics['num_components'],
+                'largest_component_change': ((high_removed_metrics['largest_component_size'] - self.G.number_of_nodes())
+                                           / self.G.number_of_nodes() * 100),
+                'clustering_change': ((high_removed_metrics['clustering_coefficient'] - original_metrics['avg_clustering'])
+                                    / original_metrics['avg_clustering'] * 100)
+            },
+            'random_removal': {
+                'path_length_change': ((random_removed_metrics['avg_path_length'] - original_metrics['avg_path_length'])
+                                     / original_metrics['avg_path_length'] * 100),
+                'num_components': random_removed_metrics['num_components'],
+                'largest_component_change': ((random_removed_metrics['largest_component_size'] - self.G.number_of_nodes())
+                                           / self.G.number_of_nodes() * 100),
+                'clustering_change': ((random_removed_metrics['clustering_coefficient'] - original_metrics['avg_clustering'])
+                                    / original_metrics['avg_clustering'] * 100)
+            }
+        }
+        
+        # Get characteristics of top 5 betweenness nodes
+        top_5_nodes = []
+        for node, betweenness in top_nodes[:5]:
+            top_5_nodes.append({
+                'node_id': node,
+                'betweenness': betweenness,
+                'degree': self.G.degree(node)
+            })
+        
+        results['top_5_nodes'] = top_5_nodes
+        
+        return results
 
-def remove_top_betweenness_nodes(G, percentage):
-    """Removes a specified percentage of nodes with the highest betweenness centrality."""
-    betweenness = calculate_betweenness_centrality(G)
-    num_nodes_to_remove = int(len(G.nodes()) * percentage)
-    sorted_nodes = sorted(betweenness.items(), key=lambda item: item[1], reverse=True)
-    nodes_to_remove = [node for node, centrality in sorted_nodes[:num_nodes_to_remove]]
-
-    G_copy = G.copy()
-    G_copy.remove_nodes_from(nodes_to_remove)
-    return G_copy
-
-# --- Hidden Bridge Identification ---
-
-def identify_hidden_bridges(G, communities, num_pairs=5, sample_size=10):
-    """Identifies potential hidden bridge nodes."""
-    community_pairs = list(combinations(range(len(communities)), 2))
-    if num_pairs < len(community_pairs):
-        community_pairs = random.sample(community_pairs, num_pairs)
-
-    hidden_bridges = {pair: [] for pair in community_pairs}
-    initial_path_lengths = {}
-
-    # Measure initial path lengths
-    for pair in community_pairs:
-        community1 = list(communities[pair[0]])
-        community2 = list(communities[pair[1]])
-
-        # Sample nodes from the original graph
-        sample_community1 = random.sample(community1, min(sample_size, len(community1)))
-        sample_community2 = random.sample(community2, min(sample_size, len(community2)))
-
-        total_path_length = 0
-        num_paths = 0
-
-        for u in sample_community1:
-            for v in sample_community2:
-                if u != v and nx.has_path(G, u, v):
-                    total_path_length += nx.shortest_path_length(G, u, v)
-                    num_paths += 1
-
-        initial_path_lengths[pair] = total_path_length / num_paths if num_paths > 0 else float('inf')
-
-    # Analyze impact of node removal
-    for pair in community_pairs:
-        community1 = set(communities[pair[0]])
-        community2 = set(communities[pair[1]])
-        nodes_to_consider = community1.union(community2)
-
-        for node in nodes_to_consider:
-            G_copy = G.copy()
-            if node in G_copy:  # Check if node exists before removal
-                G_copy.remove_node(node)
-
-                # Sample nodes from the original graph
-                sample_community1 = random.sample(list(community1), min(sample_size, len(community1)))
-                sample_community2 = random.sample(list(community2), min(sample_size, len(community2)))
-
-                total_path_length = 0
-                num_paths = 0
-
-                for u in sample_community1:
-                    for v in sample_community2:
-                        if u != v and u in G_copy and v in G_copy and nx.has_path(G_copy, u, v):
-                            total_path_length += nx.shortest_path_length(G_copy, u, v)
-                            num_paths += 1
-
-                if num_paths > 0:
-                    avg_path_length = total_path_length / num_paths
-                    if initial_path_lengths[pair] != float('inf') and avg_path_length > initial_path_lengths[pair]:
-                        hidden_bridges[pair].append((node, avg_path_length - initial_path_lengths[pair]))
-                elif initial_path_lengths[pair] != float('inf'):
-                    hidden_bridges[pair].append((node, float('inf')))
-
-    return hidden_bridges
-
-# --- Main Execution ---
+def main():
+    """Main function to run network analysis from command line."""
+    parser = argparse.ArgumentParser(description='Analyze complex networks')
+    parser.add_argument('input_file', type=str, help='Path to input network file')
+    parser.add_argument('--output', type=str, help='Output directory for results', default='results')
+    parser.add_argument('--removal-percentage', type=float, default=0.01,
+                       help='Percentage of high betweenness nodes to remove (default: 0.01 for 1%)')
+    args = parser.parse_args()
+    
+    # Create output directory
+    output_dir = Path(args.output)
+    output_dir.mkdir(exist_ok=True)
+    
+    try:
+        # Initialize and run analysis
+        analyzer = NetworkAnalyzer.from_file(args.input_file)
+        
+        # Basic analysis
+        metrics = analyzer.basic_analysis()
+        logger.info("Basic network metrics:")
+        for metric, value in metrics.items():
+            logger.info(f"{metric}: {value}")
+        
+        # Degree distribution
+        degree_df = analyzer.analyze_degree_distribution()
+        degree_df.to_csv(output_dir / 'degree_distribution.csv', index=False)
+        
+        # Community detection
+        communities = analyzer.detect_communities()
+        logger.info(f"Detected {len(communities)} communities")
+        
+        # Analyze impact of removing top 1% betweenness nodes
+        removal_results = analyzer.analyze_high_betweenness_removal(percentage=0.01)
+        
+        # Save removal analysis results
+        with open(output_dir / 'removal_analysis.txt', 'w') as f:
+            f.write("Impact of High Betweenness Node Removal (top 1%):\n")
+            f.write("-" * 50 + "\n")
+            for metric, value in removal_results['high_betweenness_removal'].items():
+                f.write(f"{metric}: {value:.2f}%\n")
+            
+            f.write("\nImpact of Random Node Removal:\n")
+            f.write("-" * 50 + "\n")
+            for metric, value in removal_results['random_removal'].items():
+                f.write(f"{metric}: {value:.2f}%\n")
+            
+            f.write("\nTop 5 Nodes by Betweenness Centrality:\n")
+            f.write("-" * 50 + "\n")
+            for node in removal_results['top_5_nodes']:
+                f.write(f"Node {node['node_id']}: Betweenness={node['betweenness']:.4f}, "
+                       f"Degree={node['degree']}\n")
+        
+        # Visualize
+        analyzer.visualize_network(output_dir / 'network_visualization.png')
+        
+    except Exception as e:
+        logger.error(f"Analysis failed: {str(e)}")
+        raise
 
 if __name__ == "__main__":
-    filepath = "/Users/szymongoralczuk/Downloads/facebook_combined.txt"  # Replace with your file path
-    G = load_graph_data(filepath)
-
-    if G:
-        analyze_network(G)
-        communities = detect_communities(G)
-
-        if communities:
-            print("\n--- Community Detection Results ---")
-            print(f"Number of communities detected: {len(communities)}")
-
-            print("\n--- Preliminary 'Hidden Bridge' Analysis ---")
-            path_lengths = calculate_path_length_between_communities(G, communities, num_pairs=5)
-            for pair, avg_path_length in path_lengths:
-                print(f"Average path length between communities {pair[0]} and {pair[1]}: {avg_path_length:.2f}")
-
-            # --- Betweenness Centrality and Node Removal ---
-            print("\n--- Removing Top Betweenness Nodes ---")
-            start_time = time.time()
-            G_reduced = remove_top_betweenness_nodes(G, 0.01)  # Remove top 5%
-            end_time = time.time()
-            print(f"Time taken for removing top betweenness nodes: {end_time - start_time:.2f} seconds")
-
-            print("\n--- Analyzing Network After Node Removal ---")
-
-            # Update communities to only include nodes present in G_reduced
-            communities_reduced = [[node for node in community if node in G_reduced] for community in communities]
-
-            path_lengths_after = calculate_path_length_between_communities(G_reduced, communities_reduced, num_pairs=5)
-            for pair, avg_path_length in path_lengths_after:
-                print(f"Average path length between communities {pair[0]} and {pair[1]}: {avg_path_length:.2f}")
-
-            # --- Hidden Bridge Identification ---
-            print("\n--- Identifying Hidden Bridges ---")
-            start_time = time.time()
-            hidden_bridge_nodes = identify_hidden_bridges(G, communities, num_pairs=5)
-            end_time = time.time()
-            print(f"Time taken for hidden bridge identification: {end_time - start_time:.2f} seconds")
-
-            for pair, bridges in hidden_bridge_nodes.items():
-                if bridges:
-                    print(f"\nPotential hidden bridges between communities {pair[0]} and {pair[1]}:")
-                    sorted_bridges = sorted(bridges, key=lambda x: x[1], reverse=True)
-                    for node, impact in sorted_bridges[:10]:
-                        # Check if the node exists in the original graph before calculating betweenness centrality
-                        if node in G:
-                            betweenness = nx.betweenness_centrality(G)[node]
-                            print(f"  Node: {node}, Betweenness Centrality: {betweenness:.4f}, Impact on Path Length: {impact}")
-                        else:
-                            print(f"  Node: {node} (no longer in graph), Impact on Path Length: {impact}")
-
-    print("Done.")
+    main()
